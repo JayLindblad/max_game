@@ -199,10 +199,10 @@ function updateHUD() {
   const keyEl  = document.getElementById('keyHUD');
 
   if (hasPullAbility) {
-    pullEl.textContent = '⚙ PUSH/PULL: READY';
+    pullEl.textContent = '⚙ PULL: READY';
     pullEl.className = 'hud-pill active';
   } else {
-    pullEl.textContent = '⚙ PUSH/PULL: LOCKED';
+    pullEl.textContent = '⚙ PULL: LOCKED';
     pullEl.className = 'hud-pill';
   }
 
@@ -247,13 +247,8 @@ function tryMove(dr, dc) {
   // Wall — blocked
   if (target === 'w') return;
 
-  // Crate — attempt push
+  // Crate — attempt push (always allowed)
   if (target === 'c') {
-    if (!hasPullAbility) {
-      setMsg("You can't move blocks yet — find the power-up first!");
-      render();
-      return;
-    }
     const pushRow = newRow + dr;
     const pushCol = newCol + dc;
     if (!inBounds(pushRow, pushCol)) return;
@@ -277,7 +272,7 @@ function tryMove(dr, dc) {
   if (here === 'i') {
     hasPullAbility = true;
     grid[player.row][player.col] = '*';
-    setMsg('Push & Pull ability unlocked!  Hold Shift while moving to pull.', 320);
+    setMsg('Pull ability unlocked!  Hold Shift while moving to pull blocks.', 320);
   } else if (here === 'k') {
     hasKey = true;
     grid[player.row][player.col] = '*';
