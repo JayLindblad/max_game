@@ -58,6 +58,26 @@
       font-size: 13px;
       color: #888;
     }
+    .btn-overlay {
+      margin-top: 6px;
+      padding: 8px 24px;
+      background: rgba(232,196,74,0.15);
+      border: 1px solid rgba(232,196,74,0.5);
+      color: #e8c44a;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      letter-spacing: 2px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+    .btn-overlay:hover { background: rgba(232,196,74,0.3); }
+    #levelLabel {
+      font-size: 12px;
+      letter-spacing: 2px;
+      color: #666;
+      margin-bottom: 4px;
+    }
 
     /* HUD bar */
     #hud {
@@ -111,17 +131,19 @@
 <body>
 
 <h1>DUNGEON PUZZLE</h1>
+<div id="levelLabel">LEVEL 1</div>
 
 <div id="gameWrapper">
   <canvas id="gameCanvas"></canvas>
   <div id="winOverlay">
-    <div class="win-title">✦  ESCAPED  ✦</div>
-    <div class="win-sub">Press R to play again</div>
+    <div class="win-title" id="winTitle">✦  ESCAPED  ✦</div>
+    <div class="win-sub" id="winSub">Press R to play again</div>
+    <button class="btn-overlay" id="winNextBtn" style="display:none" onclick="advanceLevel()">NEXT LEVEL →</button>
   </div>
 </div>
 
 <div id="hud">
-  <div class="hud-pill" id="pullHUD">⚙ PUSH/PULL: LOCKED</div>
+  <div class="hud-pill" id="pullHUD">⚙ PULL: LOCKED</div>
   <div class="hud-pill" id="keyHUD">⚿ KEY: NOT FOUND</div>
 </div>
 
@@ -141,7 +163,8 @@ const COLS = 7;
 
 // ─── Level data ───────────────────────────────────────────────────────────────
 // * = floor, w = wall, c = crate, p = player, k = key, i = pull-pickup, e = exit
-const LEVEL = [
+// t = pressure plate (floor feature), d = door (wall until plate activated)
+const LEVEL1 = [
   ['i', 'w', 'w', '*', '*', '*', 'e'],
   ['*', 'c', 'c', '*', '*', 'w', 'w'],
   ['*', '*', '*', 'w', 'w', '*', '*'],
@@ -153,6 +176,27 @@ const LEVEL = [
   ['p', '*', 'c', '*', '*', '*', '*'],
 ];
 
+// Level 2: pressure plate (t) at (5,4) opens door (d) at (1,3).
+// Crate at (5,1) is boxed in by walls on all push sides — can only be pulled right.
+const LEVEL2 = [
+  ['*', '*', '*', 'e', '*', '*', '*'],
+  ['w', 'w', 'w', 'd', 'w', 'w', 'w'],
+  ['*', '*', '*', '*', '*', '*', '*'],
+  ['*', 'w', '*', 'k', '*', 'w', '*'],
+  ['*', 'w', '*', '*', '*', 'w', '*'],
+  ['w', 'c', '*', '*', 't', '*', '*'],
+  ['*', '*', '*', '*', '*', '*', '*'],
+  ['*', 'w', '*', '*', '*', 'w', '*'],
+  ['*', '*', 'p', '*', '*', '*', '*'],
+];
+
+const LEVELS = [null, LEVEL1, LEVEL2]; // 1-indexed
+
+// Per-level plate→door links: plateLinks[levelNum] = [{row,col, doors:[{row,col}]}]
+const LEVEL_PLATES = {
+  2: [{ row: 5, col: 4, doors: [{ row: 1, col: 3 }] }],
+};
+
 // ─── Canvas setup ─────────────────────────────────────────────────────────────
 const canvas = document.getElementById('gameCanvas');
 const ctx    = canvas.getContext('2d');
@@ -160,33 +204,46 @@ canvas.width  = COLS * CELL;
 canvas.height = ROWS * CELL;
 
 // ─── Game state ───────────────────────────────────────────────────────────────
-let grid          = [];
-let player        = { row: 0, col: 0, dir: 'up' };
+let grid           = [];
+let floorLayer     = []; // stores 't' at pressure plate positions
+let plateLinks     = []; // [{row, col, doors:[{row,col}]}] for current level
+let player         = { row: 0, col: 0, dir: 'up' };
 let hasPullAbility = false;
 let hasKey         = false;
 let gameWon        = false;
 let shiftHeld      = false;
 let msgTimer       = 0;
 let frame          = 0;
+let currentLevel   = 1;
 
-function initGame() {
-  hasPullAbility = false;
+function initLevel(levelNum) {
+  currentLevel   = levelNum;
   hasKey         = false;
   gameWon        = false;
   shiftHeld      = false;
   msgTimer       = 0;
+  // Level 2+ starts with pull ability already unlocked
+  hasPullAbility = levelNum > 1;
 
-  grid = LEVEL.map(row => [...row]);
+  const levelData = LEVELS[levelNum];
+  grid      = levelData.map(row => [...row]);
+  floorLayer = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  plateLinks = (LEVEL_PLATES[levelNum] || []).map(p => ({ ...p, doors: [...p.doors] }));
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       if (grid[r][c] === 'p') {
         player = { row: r, col: c, dir: 'up' };
         grid[r][c] = '*';
+      } else if (grid[r][c] === 't') {
+        // Pressure plate is a floor feature; clear the grid cell so objects can sit on it
+        floorLayer[r][c] = 't';
+        grid[r][c] = '*';
       }
     }
   }
 
+  document.getElementById('levelLabel').textContent = 'LEVEL ' + levelNum;
   document.getElementById('winOverlay').classList.remove('show');
   setMsg('');
   updateHUD();
@@ -244,18 +301,19 @@ function tryMove(dr, dc) {
 
   const target = grid[newRow][newCol];
 
-  // Wall — blocked
-  if (target === 'w') return;
+  // Wall or closed door — blocked
+  if (target === 'w' || target === 'd') return;
 
   // Crate — attempt push (always allowed)
   if (target === 'c') {
     const pushRow = newRow + dr;
     const pushCol = newCol + dc;
     if (!inBounds(pushRow, pushCol)) return;
-    // Crates can only slide onto empty floor tiles
+    // Crates can slide onto empty floor or empty pressure plates
     if (grid[pushRow][pushCol] !== '*') return;
     grid[pushRow][pushCol] = 'c';
     grid[newRow][newCol]   = '*';
+    checkPlates();
   }
 
   // Save old position before moving
@@ -280,6 +338,11 @@ function tryMove(dr, dc) {
   } else if (here === 'e') {
     if (hasKey) {
       gameWon = true;
+      const isLastLevel = !LEVELS[currentLevel + 1];
+      document.getElementById('winTitle').textContent =
+        isLastLevel ? '✦  ESCAPED  ✦' : '✦  LEVEL ' + currentLevel + ' CLEAR  ✦';
+      document.getElementById('winSub').textContent = 'Press R to restart';
+      document.getElementById('winNextBtn').style.display = isLastLevel ? 'none' : 'inline-block';
       document.getElementById('winOverlay').classList.add('show');
       updateHUD();
       render();
@@ -299,11 +362,40 @@ function tryMove(dr, dc) {
     if (inBounds(fromR, fromC) && grid[fromR][fromC] === 'c' && grid[oldRow][oldCol] === '*') {
       grid[oldRow][oldCol] = 'c';
       grid[fromR][fromC]   = '*';
+      checkPlates();
     }
   }
 
   updateHUD();
   render();
+}
+
+// ─── Pressure plate / door logic ─────────────────────────────────────────────
+function checkPlates() {
+  for (const plate of plateLinks) {
+    const active = grid[plate.row][plate.col] === 'c';
+    for (const door of plate.doors) {
+      if (active) {
+        if (grid[door.row][door.col] === 'd') {
+          grid[door.row][door.col] = '*';
+          setMsg('A door has opened!', 200);
+        }
+      } else {
+        // Only close if the player isn't standing in the doorway
+        if (grid[door.row][door.col] === '*' &&
+            !(player.row === door.row && player.col === door.col)) {
+          grid[door.row][door.col] = 'd';
+        }
+      }
+    }
+  }
+}
+
+function advanceLevel() {
+  const next = currentLevel + 1;
+  if (LEVELS[next]) {
+    initLevel(next);
+  }
 }
 
 // ─── Drawing helpers ──────────────────────────────────────────────────────────
@@ -317,6 +409,72 @@ function drawFloor(x, y) {
   ctx.strokeStyle = 'rgba(0,0,0,0.35)';
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+}
+
+// Pressure plate (drawn over the floor, under any crate on top)
+function drawPlate(x, y, activated) {
+  const pad = 10;
+  const size = CELL - pad * 2;
+  // Sunken inset
+  ctx.fillStyle = activated ? '#3a5c30' : '#1a1a26';
+  ctx.fillRect(x + pad, y + pad, size, size);
+  // Border
+  ctx.strokeStyle = activated ? '#60c050' : '#555570';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + pad + 1, y + pad + 1, size - 2, size - 2);
+  // Corner marks
+  const m = 4;
+  ctx.strokeStyle = activated ? '#80e060' : '#404060';
+  ctx.lineWidth = 2;
+  for (const [cx2, cy2] of [
+    [x + pad + 3, y + pad + 3], [x + CELL - pad - 3, y + pad + 3],
+    [x + pad + 3, y + CELL - pad - 3], [x + CELL - pad - 3, y + CELL - pad - 3],
+  ]) {
+    ctx.beginPath(); ctx.moveTo(cx2, cy2 + m); ctx.lineTo(cx2, cy2); ctx.lineTo(cx2 + m, cy2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx2, cy2 + m); ctx.lineTo(cx2, cy2); ctx.lineTo(cx2 + m, cy2); ctx.stroke();
+  }
+  // Indicator dot
+  ctx.fillStyle = activated ? '#80e060' : '#444466';
+  ctx.beginPath();
+  ctx.arc(x + CELL / 2, y + CELL / 2, 5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Closed door (looks like a wall segment with a door inset)
+function drawDoor(x, y) {
+  // Wall backing
+  ctx.fillStyle = '#3e3e4e';
+  ctx.fillRect(x, y, CELL, CELL);
+  // Brick lines same as wall
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = 1;
+  const brickH = Math.floor(CELL / 3);
+  for (let i = 0; i < 3; i++) {
+    const by = y + i * brickH;
+    ctx.beginPath(); ctx.moveTo(x, by); ctx.lineTo(x + CELL, by); ctx.stroke();
+    const ox = (i % 2 === 0) ? CELL * 0.5 : CELL * 0.25;
+    ctx.beginPath(); ctx.moveTo(x + ox, by); ctx.lineTo(x + ox, by + brickH); ctx.stroke();
+  }
+  // Door inset (wooden panel)
+  const dpad = 8;
+  ctx.fillStyle = '#6a4010';
+  ctx.fillRect(x + dpad, y + dpad, CELL - dpad * 2, CELL - dpad * 2);
+  ctx.fillStyle = '#8a5818';
+  ctx.fillRect(x + dpad, y + dpad, CELL - dpad * 2, 5);
+  ctx.fillStyle = '#3a2008';
+  ctx.fillRect(x + dpad, y + CELL - dpad - 5, CELL - dpad * 2, 5);
+  // Door handle
+  ctx.fillStyle = '#d0a040';
+  ctx.beginPath();
+  ctx.arc(x + CELL / 2 + 8, y + CELL / 2, 3, 0, Math.PI * 2);
+  ctx.fill();
+  // Bevels
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(x, y, CELL, 5);
+  ctx.fillRect(x, y, 5, CELL);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(x + CELL - 5, y, 5, CELL);
+  ctx.fillRect(x, y + CELL - 5, CELL, 5);
 }
 
 // Stone wall with bevelled edges & brick lines
@@ -584,10 +742,17 @@ function render() {
       const y    = r * CELL;
       const cell = grid[r][c];
 
-      if (cell !== 'w') drawFloor(x, y);
+      if (cell !== 'w' && cell !== 'd') drawFloor(x, y);
+
+      // Draw pressure plate under whatever is on this tile
+      if (floorLayer[r][c] === 't') {
+        const activated = (cell === 'c');
+        drawPlate(x, y, activated);
+      }
 
       switch (cell) {
         case 'w': drawWall(x, y);    break;
+        case 'd': drawDoor(x, y);    break;
         case 'c': drawCrate(x, y);   break;
         case 'k': drawKey(x, y);     break;
         case 'i': drawPickup(x, y);  break;
@@ -657,7 +822,7 @@ document.addEventListener('keydown', e => {
     if (!shiftHeld) { shiftHeld = true; render(); }
     return;
   }
-  if (e.key === 'r' || e.key === 'R') { initGame(); return; }
+  if (e.key === 'r' || e.key === 'R') { initLevel(currentLevel); return; }
 
   const dir = KEYS[e.key];
   if (dir) {
@@ -674,7 +839,7 @@ document.addEventListener('keyup', e => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-initGame();
+initLevel(1);
 loop();
 </script>
 </body>
