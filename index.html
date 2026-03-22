@@ -176,25 +176,28 @@ const LEVEL1 = [
   ['p', '*', 'c', '*', '*', '*', '*'],
 ];
 
-// Level 2: pressure plate (t) at (5,4) opens door (d) at (1,3).
-// Crate at (5,1) is boxed in by walls on all push sides — can only be pulled right.
+// Level 2: pressure plate (t) at (4,3) opens door (d) at (1,3).
+// Walls at (5,0) and (5,6) box in the crates at (5,1) and (5,5) so they
+// cannot be pushed horizontally — pull (Shift+move) is required to slide
+// them toward the plate.  Crates at (3,2) and (3,4) block the path to the
+// door and must also be navigated around.
 const LEVEL2 = [
   ['*', '*', '*', 'e', '*', '*', '*'],
   ['w', 'w', 'w', 'd', 'w', 'w', 'w'],
   ['*', '*', '*', '*', '*', '*', '*'],
-  ['*', 'w', '*', 'k', '*', 'w', '*'],
-  ['*', 'w', '*', '*', '*', 'w', '*'],
-  ['w', 'c', '*', '*', 't', '*', '*'],
+  ['*', 'w', 'c', '*', 'c', 'w', '*'],
+  ['*', '*', '*', 't', '*', '*', '*'],
+  ['w', 'c', '*', '*', '*', 'c', 'w'],
   ['*', '*', '*', '*', '*', '*', '*'],
-  ['*', 'w', '*', '*', '*', 'w', '*'],
-  ['*', '*', 'p', '*', '*', '*', '*'],
+  ['*', '*', 'w', 'k', 'w', '*', '*'],
+  ['*', '*', '*', 'p', '*', '*', '*'],
 ];
 
 const LEVELS = [null, LEVEL1, LEVEL2]; // 1-indexed
 
 // Per-level plate→door links: plateLinks[levelNum] = [{row,col, doors:[{row,col}]}]
 const LEVEL_PLATES = {
-  2: [{ row: 5, col: 4, doors: [{ row: 1, col: 3 }] }],
+  2: [{ row: 4, col: 3, doors: [{ row: 1, col: 3 }] }],
 };
 
 // ─── Canvas setup ─────────────────────────────────────────────────────────────
