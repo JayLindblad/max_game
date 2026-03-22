@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dungeon Block Puzzle</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0d0d18;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Courier New', Courier, monospace;
+      color: #ccc;
+      user-select: none;
+    }
+
+    h1 {
+      font-size: 22px;
+      letter-spacing: 4px;
+      color: #e8c44a;
+      text-shadow: 0 0 12px rgba(232,196,74,0.5);
+      margin-bottom: 14px;
+    }
+
+    #gameWrapper {
+      position: relative;
+    }
+
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+    }
+
+    /* Win overlay */
+    #winOverlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.82);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+    #winOverlay.show { display: flex; }
+    #winOverlay .win-title {
+      font-size: 30px;
+      color: #e8c44a;
+      text-shadow: 0 0 20px rgba(232,196,74,0.8);
+      letter-spacing: 3px;
+    }
+    #winOverlay .win-sub {
+      font-size: 13px;
+      color: #888;
+    }
+
+    /* HUD bar */
+    #hud {
+      display: flex;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .hud-pill {
+      padding: 5px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      letter-spacing: 1px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.05);
+      color: #666;
+      transition: all 0.3s;
+    }
+    .hud-pill.active {
+      color: #90ee90;
+      border-color: rgba(144,238,144,0.5);
+      box-shadow: 0 0 8px rgba(144,238,144,0.2);
+    }
+    .hud-pill.key-active {
+      color: #e8c44a;
+      border-color: rgba(232,196,74,0.5);
+      box-shadow: 0 0 8px rgba(232,196,74,0.2);
+    }
+
+    /* Message */
+    #message {
+      margin-top: 10px;
+      min-height: 18px;
+      font-size: 12px;
+      color: #777;
+      letter-spacing: 0.5px;
+    }
+
+    /* Controls help */
+    #controls {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #444;
+      text-align: center;
+      line-height: 1.8;
+    }
+    #controls span {
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+
+<h1>DUNGEON PUZZLE</h1>
+
+<div id="gameWrapper">
+  <canvas id="gameCanvas"></canvas>
+  <div id="winOverlay">
+    <div class="win-title">✦  ESCAPED  ✦</div>
+    <div class="win-sub">Press R to play again</div>
+  </div>
+</div>
+
+<div id="hud">
+  <div class="hud-pill" id="pullHUD">⚙ PUSH/PULL: LOCKED</div>
+  <div class="hud-pill" id="keyHUD">⚿ KEY: NOT FOUND</div>
+</div>
+
+<div id="message"></div>
+
+<div id="controls">
+  <span>Arrow Keys</span> or <span>WASD</span> — Move &nbsp;|&nbsp;
+  Hold <span>Shift</span> while moving — Pull blocks &nbsp;|&nbsp;
+  <span>R</span> — Restart
+</div>
+
+<script>
+// ─── Constants ────────────────────────────────────────────────────────────────
+const CELL = 64;
+const ROWS = 9;
+const COLS = 7;
+
+// ─── Level data ───────────────────────────────────────────────────────────────
+// * = floor, w = wall, c = crate, p = player, k = key, i = pull-pickup, e = exit
+const LEVEL = [
+  ['i', 'w', 'w', '*', '*', '*', 'e'],
+  ['*', 'c', 'c', '*', '*', 'w', 'w'],
+  ['*', '*', '*', 'w', 'w', '*', '*'],
+  ['*', '*', 'w', '*', 'w', '*', '*'],
+  ['w', '*', 'c', 'c', '*', '*', '*'],
+  ['*', 'c', 'c', '*', '*', 'w', '*'],
+  ['w', 'w', '*', 'w', 'c', 'w', 'k'],
+  ['*', '*', 'w', '*', 'c', '*', 'w'],
+  ['p', '*', 'c', '*', '*', '*', '*'],
+];
+
+// ─── Canvas setup ─────────────────────────────────────────────────────────────
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+canvas.width  = COLS * CELL;
+canvas.height = ROWS * CELL;
+
+// ─── Game state ───────────────────────────────────────────────────────────────
+let grid          = [];
+let player        = { row: 0, col: 0, dir: 'up' };
+let hasPullAbility = false;
+let hasKey         = false;
+let gameWon        = false;
+let shiftHeld      = false;
+let msgTimer       = 0;
+let frame          = 0;
+
+function initGame() {
+  hasPullAbility = false;
+  hasKey         = false;
+  gameWon        = false;
+  shiftHeld      = false;
+  msgTimer       = 0;
+
+  grid = LEVEL.map(row => [...row]);
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (grid[r][c] === 'p') {
+        player = { row: r, col: c, dir: 'up' };
+        grid[r][c] = '*';
+      }
+    }
+  }
+
+  document.getElementById('winOverlay').classList.remove('show');
+  setMsg('');
+  updateHUD();
+  render();
+}
+
+// ─── HUD / messages ───────────────────────────────────────────────────────────
+function updateHUD() {
+  const pullEl = document.getElementById('pullHUD');
+  const keyEl  = document.getElementById('keyHUD');
+
+  if (hasPullAbility) {
+    pullEl.textContent = '⚙ PUSH/PULL: READY';
+    pullEl.className = 'hud-pill active';
+  } else {
+    pullEl.textContent = '⚙ PUSH/PULL: LOCKED';
+    pullEl.className = 'hud-pill';
+  }
+
+  if (hasKey) {
+    keyEl.textContent = '⚿ KEY: COLLECTED';
+    keyEl.className = 'hud-pill key-active';
+  } else {
+    keyEl.textContent = '⚿ KEY: NOT FOUND';
+    keyEl.className = 'hud-pill';
+  }
+}
+
+function setMsg(text, duration = 220) {
+  const el = document.getElementById('message');
+  el.textContent = text;
+  msgTimer = duration;
+}
+
+// ─── Movement / game logic ────────────────────────────────────────────────────
+function inBounds(r, c) {
+  return r >= 0 && r < ROWS && c >= 0 && c < COLS;
+}
+
+function tryMove(dr, dc) {
+  if (gameWon) return;
+
+  const pulling = shiftHeld && hasPullAbility;
+
+  // Track facing direction
+  if (dr === -1) player.dir = 'up';
+  else if (dr === 1) player.dir = 'down';
+  else if (dc === -1) player.dir = 'left';
+  else player.dir = 'right';
+
+  const newRow = player.row + dr;
+  const newCol = player.col + dc;
+
+  if (!inBounds(newRow, newCol)) return;
+
+  const target = grid[newRow][newCol];
+
+  // Wall — blocked
+  if (target === 'w') return;
+
+  // Crate — attempt push
+  if (target === 'c') {
+    if (!hasPullAbility) {
+      setMsg("You can't move blocks yet — find the power-up first!");
+      render();
+      return;
+    }
+    const pushRow = newRow + dr;
+    const pushCol = newCol + dc;
+    if (!inBounds(pushRow, pushCol)) return;
+    // Crates can only slide onto empty floor tiles
+    if (grid[pushRow][pushCol] !== '*') return;
+    grid[pushRow][pushCol] = 'c';
+    grid[newRow][newCol]   = '*';
+  }
+
+  // Save old position before moving
+  const oldRow = player.row;
+  const oldCol = player.col;
+
+  // Move player
+  player.row = newRow;
+  player.col = newCol;
+
+  // ── Item collection ──
+  const here = grid[player.row][player.col];
+
+  if (here === 'i') {
+    hasPullAbility = true;
+    grid[player.row][player.col] = '*';
+    setMsg('Push & Pull ability unlocked!  Hold Shift while moving to pull.', 320);
+  } else if (here === 'k') {
+    hasKey = true;
+    grid[player.row][player.col] = '*';
+    setMsg('Key collected!  Find the exit!', 280);
+  } else if (here === 'e') {
+    if (hasKey) {
+      gameWon = true;
+      document.getElementById('winOverlay').classList.add('show');
+      updateHUD();
+      render();
+      return;
+    } else {
+      setMsg('The exit is sealed — find the key first!');
+    }
+  }
+
+  // ── Pull logic ──
+  // Crate to pull is at (oldRow - dr, oldCol - dc) — directly behind the player's
+  // old position.  It should slide to (oldRow, oldCol) as the player walks away.
+  if (pulling) {
+    const fromR = oldRow - dr;
+    const fromC = oldCol - dc;
+    // Destination is the old player tile (just vacated — always '*')
+    if (inBounds(fromR, fromC) && grid[fromR][fromC] === 'c' && grid[oldRow][oldCol] === '*') {
+      grid[oldRow][oldCol] = 'c';
+      grid[fromR][fromC]   = '*';
+    }
+  }
+
+  updateHUD();
+  render();
+}
+
+// ─── Drawing helpers ──────────────────────────────────────────────────────────
+
+// Checkerboard stone floor
+function drawFloor(x, y) {
+  const even = ((x / CELL) + (y / CELL)) % 2 === 0;
+  ctx.fillStyle = even ? '#242430' : '#1e1e2a';
+  ctx.fillRect(x, y, CELL, CELL);
+  // Subtle mortar lines
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+}
+
+// Stone wall with bevelled edges & brick lines
+function drawWall(x, y) {
+  // Face
+  ctx.fillStyle = '#3e3e4e';
+  ctx.fillRect(x, y, CELL, CELL);
+
+  // Brick rows
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = 1;
+  const brickH = Math.floor(CELL / 3);
+  for (let i = 0; i < 3; i++) {
+    const by = y + i * brickH;
+    ctx.beginPath(); ctx.moveTo(x, by); ctx.lineTo(x + CELL, by); ctx.stroke();
+    // Staggered vertical joint
+    const ox = (i % 2 === 0) ? CELL * 0.5 : CELL * 0.25;
+    ctx.beginPath(); ctx.moveTo(x + ox, by); ctx.lineTo(x + ox, by + brickH); ctx.stroke();
+  }
+
+  // Top-left bevel (light)
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillRect(x, y, CELL, 5);
+  ctx.fillRect(x, y, 5, CELL);
+
+  // Bottom-right bevel (shadow)
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(x + CELL - 5, y, 5, CELL);
+  ctx.fillRect(x, y + CELL - 5, CELL, 5);
+}
+
+// Wooden crate
+function drawCrate(x, y) {
+  const pad = 4;
+  const inner = CELL - pad * 2;
+
+  // Drop shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(x + pad + 3, y + pad + 3, inner, inner);
+
+  // Main face
+  ctx.fillStyle = '#7a5218';
+  ctx.fillRect(x + pad, y + pad, inner, inner);
+
+  // Wood grain highlight (top-left)
+  ctx.fillStyle = '#9a6a28';
+  ctx.fillRect(x + pad, y + pad, inner, 6);
+  ctx.fillRect(x + pad, y + pad, 6, inner);
+
+  // Shadow edge (bottom-right)
+  ctx.fillStyle = '#4a3008';
+  ctx.fillRect(x + pad + inner - 6, y + pad, 6, inner);
+  ctx.fillRect(x + pad, y + pad + inner - 6, inner, 6);
+
+  // Cross bracing
+  ctx.strokeStyle = '#4a3008';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x + CELL / 2, y + pad);
+  ctx.lineTo(x + CELL / 2, y + CELL - pad);
+  ctx.moveTo(x + pad, y + CELL / 2);
+  ctx.lineTo(x + CELL - pad, y + CELL / 2);
+  ctx.stroke();
+
+  // Corner bolts
+  ctx.fillStyle = '#c8a060';
+  const bolt = 3;
+  const offsets = [
+    [pad + 4, pad + 4], [CELL - pad - 7, pad + 4],
+    [pad + 4, CELL - pad - 7], [CELL - pad - 7, CELL - pad - 7],
+  ];
+  for (const [bx, by] of offsets) {
+    ctx.beginPath(); ctx.arc(x + bx, y + by, bolt, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+// Animated golden key
+function drawKey(x, y) {
+  const cx = x + CELL / 2;
+  const cy = y + CELL / 2;
+
+  // Ambient glow
+  const grd = ctx.createRadialGradient(cx, cy, 2, cx, cy, CELL * 0.42);
+  grd.addColorStop(0, `rgba(232,196,74,${0.35 + 0.1 * Math.sin(frame * 0.06)})`);
+  grd.addColorStop(1, 'rgba(232,196,74,0)');
+  ctx.fillStyle = grd;
+  ctx.fillRect(x, y, CELL, CELL);
+
+  const col = '#e8c44a';
+  ctx.strokeStyle = col;
+  ctx.fillStyle   = col;
+  ctx.lineWidth   = 3.5;
+  ctx.lineCap     = 'round';
+
+  // Key bow (ring)
+  ctx.beginPath(); ctx.arc(cx - 10, cy, 9, 0, Math.PI * 2); ctx.stroke();
+
+  // Key shaft
+  ctx.beginPath();
+  ctx.moveTo(cx - 2, cy);
+  ctx.lineTo(cx + 15, cy);
+  ctx.stroke();
+
+  // Teeth
+  ctx.beginPath();
+  ctx.moveTo(cx + 8,  cy); ctx.lineTo(cx + 8,  cy + 6);
+  ctx.moveTo(cx + 13, cy); ctx.lineTo(cx + 13, cy + 6);
+  ctx.stroke();
+}
+
+// Animated push/pull pickup
+function drawPickup(x, y) {
+  const cx = x + CELL / 2;
+  const cy = y + CELL / 2;
+  const pulse = Math.sin(frame * 0.07) * 3;
+
+  // Glow
+  const grd = ctx.createRadialGradient(cx, cy, 2, cx, cy, CELL * 0.44 + pulse);
+  grd.addColorStop(0, 'rgba(72,200,255,0.55)');
+  grd.addColorStop(1, 'rgba(72,200,255,0)');
+  ctx.fillStyle = grd;
+  ctx.fillRect(x, y, CELL, CELL);
+
+  const col = '#50d0ff';
+  ctx.fillStyle   = col;
+  ctx.strokeStyle = '#90e8ff';
+  ctx.lineWidth   = 2;
+
+  // Two opposing arrows representing push ← → pull
+  const arrowSize = 10 + pulse * 0.5;
+  const barHalf   = 6;
+
+  // Right-pointing arrow (push)
+  ctx.beginPath();
+  ctx.moveTo(cx + arrowSize + 2, cy);
+  ctx.lineTo(cx + barHalf,        cy - 6);
+  ctx.lineTo(cx + barHalf,        cy + 6);
+  ctx.closePath(); ctx.fill();
+
+  // Left-pointing arrow (pull)
+  ctx.beginPath();
+  ctx.moveTo(cx - arrowSize - 2, cy);
+  ctx.lineTo(cx - barHalf,        cy - 6);
+  ctx.lineTo(cx - barHalf,        cy + 6);
+  ctx.closePath(); ctx.fill();
+
+  // Connecting bar
+  ctx.fillRect(cx - barHalf, cy - 2.5, barHalf * 2, 5);
+
+  // Label
+  ctx.fillStyle   = '#90e8ff';
+  ctx.font        = 'bold 9px Courier New';
+  ctx.textAlign   = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('POWER', cx, cy + 20);
+}
+
+// Animated exit door
+function drawExit(x, y) {
+  const cx = x + CELL / 2;
+  const cy = y + CELL / 2;
+  const glow = (Math.sin(frame * 0.05) + 1) / 2;
+
+  // Background glow
+  const grd = ctx.createRadialGradient(cx, cy, 2, cx, cy, CELL * 0.5);
+  if (hasKey) {
+    grd.addColorStop(0, `rgba(80,255,128,${0.4 + glow * 0.25})`);
+    grd.addColorStop(1, 'rgba(80,255,128,0)');
+  } else {
+    grd.addColorStop(0, 'rgba(100,100,120,0.25)');
+    grd.addColorStop(1, 'rgba(100,100,120,0)');
+  }
+  ctx.fillStyle = grd;
+  ctx.fillRect(x, y, CELL, CELL);
+
+  // Door arch
+  const dw = CELL * 0.52;
+  const dh = CELL * 0.64;
+  const dl = cx - dw / 2;
+  const dt = cy - dh / 2 + 2;
+
+  ctx.fillStyle   = hasKey ? `rgba(60,220,100,${0.55 + glow * 0.3})` : 'rgba(70,70,85,0.7)';
+  ctx.strokeStyle = hasKey ? `rgba(80,255,128,${0.8 + glow * 0.2})` : '#555';
+  ctx.lineWidth   = 2;
+
+  ctx.beginPath();
+  ctx.moveTo(dl,       dt + dh);
+  ctx.lineTo(dl,       dt + dh * 0.38);
+  ctx.arc(cx, dt + dh * 0.38, dw / 2, Math.PI, 0);
+  ctx.lineTo(dl + dw,  dt + dh);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  if (!hasKey) {
+    // Lock icon
+    ctx.fillStyle   = '#888';
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth   = 2;
+    const lx = cx, ly = cy + 6;
+    // Shackle
+    ctx.beginPath();
+    ctx.arc(lx, ly - 7, 5, Math.PI, 0);
+    ctx.stroke();
+    // Body
+    ctx.fillRect(lx - 6, ly - 4, 12, 10);
+  } else {
+    // EXIT text
+    ctx.fillStyle    = `rgba(180,255,200,${0.7 + glow * 0.3})`;
+    ctx.font         = 'bold 10px Courier New';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('EXIT', cx, cy + 6);
+  }
+}
+
+// Player character
+function drawPlayer(x, y) {
+  const cx = x + CELL / 2;
+  const cy = y + CELL / 2;
+  const r  = CELL * 0.28;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath();
+  ctx.ellipse(cx + 2, cy + r + 4, r * 0.7, r * 0.22, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body
+  ctx.fillStyle = '#50c050';
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+
+  // Inner shine
+  ctx.fillStyle = '#80f080';
+  ctx.beginPath(); ctx.arc(cx - r * 0.28, cy - r * 0.28, r * 0.38, 0, Math.PI * 2); ctx.fill();
+
+  // Eyes / direction indicator
+  const eyeOff = r * 0.52;
+  let ex = cx, ey = cy;
+  if (player.dir === 'up')    ey = cy - eyeOff;
+  else if (player.dir === 'down')  ey = cy + eyeOff;
+  else if (player.dir === 'left')  ex = cx - eyeOff;
+  else                             ex = cx + eyeOff;
+
+  ctx.fillStyle = '#1a4020';
+  ctx.beginPath(); ctx.arc(ex, ey, r * 0.22, 0, Math.PI * 2); ctx.fill();
+
+  // Pull-mode ring
+  if (shiftHeld && hasPullAbility) {
+    ctx.strokeStyle = 'rgba(72,200,255,0.85)';
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.arc(cx, cy, r + 6, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+// ─── Main render ─────────────────────────────────────────────────────────────
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const x    = c * CELL;
+      const y    = r * CELL;
+      const cell = grid[r][c];
+
+      if (cell !== 'w') drawFloor(x, y);
+
+      switch (cell) {
+        case 'w': drawWall(x, y);    break;
+        case 'c': drawCrate(x, y);   break;
+        case 'k': drawKey(x, y);     break;
+        case 'i': drawPickup(x, y);  break;
+        case 'e': drawExit(x, y);    break;
+      }
+    }
+  }
+
+  drawPlayer(player.col * CELL, player.row * CELL);
+
+  // Pull-mode overlay: highlight pullable crates
+  if (shiftHeld && hasPullAbility) {
+    ctx.fillStyle = 'rgba(72,200,255,0.06)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+    for (const [dr, dc] of dirs) {
+      const pr = player.row + dr;
+      const pc = player.col + dc;
+      // Highlight crates on all 4 sides (these are pushable)
+      if (inBounds(pr, pc) && grid[pr][pc] === 'c') {
+        ctx.strokeStyle = 'rgba(72,200,255,0.7)';
+        ctx.lineWidth   = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(pc * CELL + 3, pr * CELL + 3, CELL - 6, CELL - 6);
+        ctx.setLineDash([]);
+      }
+      // Highlight crates behind player (pullable)
+      const br = player.row - dr;
+      const bc = player.col - dc;
+      if (inBounds(br, bc) && grid[br][bc] === 'c') {
+        ctx.strokeStyle = 'rgba(255,160,72,0.7)';
+        ctx.lineWidth   = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(bc * CELL + 3, br * CELL + 3, CELL - 6, CELL - 6);
+        ctx.setLineDash([]);
+      }
+    }
+  }
+}
+
+// ─── Game loop (for animated tiles) ──────────────────────────────────────────
+function loop() {
+  frame++;
+  if (!gameWon) render();
+
+  if (msgTimer > 0) {
+    msgTimer--;
+    if (msgTimer === 0) {
+      const el = document.getElementById('message');
+      if (el.textContent !== '') el.textContent = '';
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ─── Input ────────────────────────────────────────────────────────────────────
+const KEYS = {
+  ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1],
+  w: [-1, 0], s: [1, 0], a: [0, -1], d: [0, 1],
+  W: [-1, 0], S: [1, 0], A: [0, -1], D: [0, 1],
+};
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Shift') {
+    if (!shiftHeld) { shiftHeld = true; render(); }
+    return;
+  }
+  if (e.key === 'r' || e.key === 'R') { initGame(); return; }
+
+  const dir = KEYS[e.key];
+  if (dir) {
+    e.preventDefault();
+    tryMove(dir[0], dir[1]);
+  }
+});
+
+document.addEventListener('keyup', e => {
+  if (e.key === 'Shift') {
+    shiftHeld = false;
+    render();
+  }
+});
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+initGame();
+loop();
+</script>
+</body>
+</html>
